@@ -20,7 +20,8 @@
     "snap": "npm run build && electron-builder --linux snap",
     "test:watch": "jest --watch",
     "test": "jest",
-    "lint": "ng lint"
+    "lint": "ng lint",
+    "network:audit": "npm run build && xvfb-run -a env BRANTA_NETWORK_AUDIT=1 BRANTA_NETWORK_AUDIT_SECONDS=10 BRANTA_NETWORK_AUDIT_PATH=network-audit.json electron build/app/main.js headless"
   },
   "build": {
     "appId": "pro.branta",

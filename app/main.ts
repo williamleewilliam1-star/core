@@ -1,13 +1,17 @@
-import { BrowserWindow, Notification as ENotification, Menu, Tray, app, clipboard, ipcMain, shell } from 'electron';
+import { BrowserWindow, Notification as ENotification, Menu, Tray, app, clipboard, ipcMain, session, shell } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as url from 'url';
 import packageJson from '../package.json';
 import { loadRecords, saveRecords } from './lib/storage.js';
 import { processUrl } from './lib/vault.js';
 import { getAllAddresses, verifyAddress, verifyXpub } from './lib/verify-address.js';
 import { decodeLightningPayment } from './lib/lightning.js';
+import { buildNetworkAuditReport, DEFAULT_ALLOWED_NETWORK_HOSTS } from './lib/network-audit.js';
 
-if (process.platform != 'win32') {
+const networkAuditEnabled = process.env['BRANTA_NETWORK_AUDIT'] === '1';
+
+if (process.platform != 'win32' && !networkAuditEnabled) {
     const AutoLaunch = require('auto-launch');
 
     let autoLaunch = new AutoLaunch({
@@ -30,6 +34,46 @@ if (process.platform != 'win32') {
 }
 
 let mainWindow: any;
+let networkAuditStarted = false;
+
+function startNetworkAudit() {
+    if (!networkAuditEnabled || networkAuditStarted) return;
+
+    networkAuditStarted = true;
+    const observedUrls = new Set<string>();
+    const extraAllowedHosts = (process.env['BRANTA_NETWORK_AUDIT_ALLOWED_HOSTS'] ?? '')
+        .split(',')
+        .map(host => host.trim())
+        .filter(Boolean);
+    const allowedHosts = [...DEFAULT_ALLOWED_NETWORK_HOSTS, ...extraAllowedHosts];
+
+    session.defaultSession.webRequest.onBeforeRequest(
+        { urls: ['http://*/*', 'https://*/*'] },
+        (details, callback) => {
+            observedUrls.add(details.url);
+            callback({ cancel: false });
+        }
+    );
+    const seconds = Math.max(1, Number(process.env['BRANTA_NETWORK_AUDIT_SECONDS'] ?? '10'));
+    const outputPath = path.resolve(process.env['BRANTA_NETWORK_AUDIT_PATH'] ?? 'network-audit.json');
+
+    setTimeout(() => {
+        const report = buildNetworkAuditReport(observedUrls, allowedHosts);
+        fs.writeFileSync(outputPath, JSON.stringify(report, null, 2) + '\n', 'utf8');
+        console.log(`[network-audit] wrote ${outputPath}`);
+        console.log(`[network-audit] observed: ${report.observedOrigins.join(', ') || '(none)'}`);
+
+        if (report.unexpectedOrigins.length > 0) {
+            console.error(`[network-audit] unexpected: ${report.unexpectedOrigins.join(', ')}`);
+            process.exitCode = 2;
+        }
+        else {
+            console.log('[network-audit] PASS: no unexpected remote origins');
+        }
+
+        forceQuit();
+    }, seconds * 1000);
+}
 
 function kickoffClipboard() {
     let previousText: string | null = null;
@@ -89,6 +133,7 @@ function getIcon(file: string) {
 }
 
 function createWindow() {
+    startNetworkAudit();
     const icon = getIcon('icon.png');
 
     if (process.platform === 'darwin') {
